@@ -293,13 +293,19 @@ class UCSDBookingBot {
         const slotTextMatch = actionHtml.match(/data-slot-text="([^"]+)"/);
         const spotsLeftTextMatch = actionHtml.match(/data-spots-left-text="([^"]+)"/);
 
-        const isAvailable = Boolean(
+        const hasBookingData = Boolean(
           aptIdMatch &&
           timeslotIdMatch &&
           timeslotinstanceIdMatch &&
           slotTextMatch &&
           spotsLeftTextMatch
         );
+
+        // Parse spots left number
+        const spotsLeftMatch = spotsText.match(/(\d+)/);
+        const spotsLeftNum = spotsLeftMatch ? parseInt(spotsLeftMatch[1]) : (spotsText.toLowerCase().includes('full') ? 0 : 999);
+
+        const isAvailable = hasBookingData && spotsLeftNum > 0;
 
         let slot = {
           slot_number: slotNum,
