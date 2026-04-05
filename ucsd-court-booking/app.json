@@ -1,7 +1,7 @@
 {
   "expo": {
-    "name": "myapp",
-    "slug": "myapp",
+    "name": "ucsd-court-booking",
+    "slug": "myucsd-court-bookingapp",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",

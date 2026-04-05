@@ -53,7 +53,8 @@ const LoginScreen = ({ navigation }) => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    justifyContent: 'center',
+    justifyContent: 'flex-start',
+    paddingTop: 100,              // Adjust this value to control exactly how high login fields sit
     padding: 20,
     backgroundColor: '#fff',
   },
