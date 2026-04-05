@@ -54,6 +54,8 @@ function timesMatch(target, slotStart) {
   return targetAmpm[1] === slotAmpm[1];
 }
 
+const BASE_URL = "https://rec.ucsd.edu";
+
 class UCSDBookingBot {
   constructor(username, password) {
     this.username = username;
@@ -72,6 +74,7 @@ class UCSDBookingBot {
           'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
           'Accept-Language': 'en-US,en;q=0.9',
         },
+        credentials: 'include',
       });
 
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
@@ -98,6 +101,7 @@ class UCSDBookingBot {
           'Password': this.password,
           'Redirect': '/booking',
         }),
+        credentials: 'include',
       });
 
       if (!loginResp.ok) throw new Error(`HTTP ${loginResp.status}`);
@@ -136,6 +140,7 @@ class UCSDBookingBot {
           'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
           'Accept-Language': 'en-US,en;q=0.9',
         },
+        credentials: 'include',
       });
 
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
@@ -174,6 +179,7 @@ class UCSDBookingBot {
           'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
           'Accept-Language': 'en-US,en;q=0.9',
         },
+        credentials: 'include',
       });
 
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
@@ -203,6 +209,7 @@ class UCSDBookingBot {
           'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
           'Accept-Language': 'en-US,en;q=0.9',
         },
+        credentials: 'include',
       });
 
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
@@ -233,7 +240,6 @@ class UCSDBookingBot {
           slot_number: slotNum,
           time_display: timeDisplay,
           spots_left: spotsText,
-          available: isAvailable,
           participant_id: participantId,
         };
 
@@ -284,6 +290,7 @@ class UCSDBookingBot {
           'Accept-Language': 'en-US,en;q=0.9',
         },
         body: postData,
+        credentials: 'include',
       });
 
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
@@ -305,7 +312,6 @@ class UCSDBookingBot {
   findSlotByTime(slots, targetTime) {
     const targetNorm = normaliseTime(targetTime);
     for (const slot of slots) {
-      if (!slot.available) continue;
       const start = extractStartTime(slot.time_display);
       if (timesMatch(targetNorm, start)) {
         return slot;
@@ -352,10 +358,11 @@ class UCSDBookingBot {
         'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
         'Accept-Language': 'en-US,en;q=0.9',
       },
+      credentials: 'include',
     });
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const result = await resp.json();
-    return result === true;
+    return !!result;
   }
 
   _resolveProductId(sport) {
