@@ -4,11 +4,18 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import UCSDBookingBot from './UCSDBookingBot';
 
 const BookingScreen = () => {
+  // Helper to calculate date 3 days from now
+  const getDefaultDate = () => {
+    const futureDate = new Date();
+    futureDate.setDate(futureDate.getDate() + 3);
+    return futureDate.toISOString().split('T')[0];
+  };
+
   const [sport, setSport] = useState('tennis');
-  const [date, setDate] = useState('');
-  const [time, setTime] = useState('');
+  const [date, setDate] = useState(getDefaultDate());
+  const [time, setTime] = useState('7:00 PM');
   const [hours, setHours] = useState('1');
-  const [court, setCourt] = useState('');
+  const [court, setCourt] = useState('North');
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState([]);
   const [bot, setBot] = useState(null);
@@ -37,7 +44,7 @@ const BookingScreen = () => {
 
       const allSlots = [];
       for (const fac of filteredFacilities) {
-        const slots = await bot.getSlots(sport, fac.id, date || new Date().toISOString().split('T')[0]);
+        const slots = await bot.getSlots(sport, fac.id, date);
         allSlots.push({ facility: fac.name, slots });
       }
       setResults(allSlots);
@@ -62,7 +69,8 @@ const BookingScreen = () => {
 
       let booked = false;
       for (const fac of filteredFacilities) {
-        const slots = await bot.getSlots(sport, fac.id, date || new Date().toISOString().split('T')[0]);
+        // Refresh slots to check current availability
+        const slots = await bot.getSlots(sport, fac.id, date);
         const consecutive = bot.findConsecutiveSlots(slots, time, parseInt(hours));
         if (consecutive) {
           booked = await bot.reserveMulti(sport, fac.id, consecutive, date);
@@ -70,10 +78,20 @@ const BookingScreen = () => {
             Alert.alert('Success', `Booked ${hours} hour(s) at ${fac.name} starting ${consecutive[0].time_display}`);
             break;
           }
+        } else if (parseInt(hours) === 1) {
+          // Try to book a single slot if consecutive slots not found and hours = 1
+          const singleSlot = bot.findSlotByTime(slots, time);
+          if (singleSlot) {
+            booked = await bot.reserve(sport, fac.id, singleSlot, date);
+            if (booked) {
+              Alert.alert('Success', `Booked 1 hour at ${fac.name} at ${singleSlot.time_display}`);
+              break;
+            }
+          }
         }
       }
       if (!booked) {
-        Alert.alert('Failed', 'No available slots found');
+        Alert.alert('Failed', 'No available slots found or booking failed. Slots may have been taken by someone else.');
       }
     } catch (error) {
       Alert.alert('Error', error.message);
@@ -96,7 +114,7 @@ const BookingScreen = () => {
       <Text>Date (YYYY-MM-DD):</Text>
       <TextInput
         style={styles.input}
-        placeholder="e.g. 2026-03-21"
+        placeholder="3 days from now"
         value={date}
         onChangeText={setDate}
       />
@@ -104,7 +122,7 @@ const BookingScreen = () => {
       <Text>Time (e.g. 8:00 AM):</Text>
       <TextInput
         style={styles.input}
-        placeholder="Start time"
+        placeholder="7:00 PM"
         value={time}
         onChangeText={setTime}
       />
@@ -121,7 +139,7 @@ const BookingScreen = () => {
       <Text>Court Filter:</Text>
       <TextInput
         style={styles.input}
-        placeholder="e.g. Muir 1"
+        placeholder="North"
         value={court}
         onChangeText={setCourt}
       />

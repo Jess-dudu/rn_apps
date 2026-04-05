@@ -74,6 +74,7 @@ class UCSDBookingBot {
     this._loggedIn = false;
     this.csrfToken = null;
     this.cookieHeader = '';
+    this._cachedProductId = null;
   }
 
   _extractCookies(setCookieHeader) {
@@ -189,7 +190,7 @@ class UCSDBookingBot {
 
   async getFacilities(sport) {
     await this._ensureLoggedIn();
-    const productId = this._resolveProductId(sport);
+    const productId = await this._getProductId(sport);
 
     try {
       const resp = await this._fetchWithCookies(`${BASE_URL}/booking/${productId}/facilities`, {
@@ -227,7 +228,7 @@ class UCSDBookingBot {
 
   async getAvailableDates(sport) {
     await this._ensureLoggedIn();
-    const productId = this._resolveProductId(sport);
+    const productId = await this._getProductId(sport);
 
     try {
       const resp = await this._fetchWithCookies(`${BASE_URL}/booking/${productId}/dates`, {
@@ -255,7 +256,7 @@ class UCSDBookingBot {
 
   async getSlots(sport, facilityId, date, availableOnly = true) {
     await this._ensureLoggedIn();
-    const productId = this._resolveProductId(sport);
+    const productId = await this._getProductId(sport);
     const [y, m, d] = date.split('-');
 
     try {
@@ -276,9 +277,7 @@ class UCSDBookingBot {
       }
 
       const slots = [];
-      const cardPattern = /<div class="card h-100"\s+data-slot-number="(\d+)"\s+data-participant-id="([^"]*)".*?<strong>([^<]+)<\/strong>.*?<span class="text-muted">([^<]+)<\/span>.*?<div class="d-grid[^"]*">(.*?)<\/div>/gs;
-
-      const bookBtnPattern = /data-apt-id="([^"]+)".*?data-timeslot-id="([^"]+)".*?data-timeslotinstance-id="([^"]+)".*?data-slot-text="([^"]+)".*?data-spots-left-text="([^"]+)"/s;
+      const cardPattern = /<div\b[^>]*class="[^"]*\bcard\b[^"]*\bh-100\b[^"]*"[^>]*data-slot-number="([^"]+)"[^>]*data-participant-id="([^"]*)"[^>]*>[\s\S]*?<strong>([^<]+)<\/strong>[\s\S]*?<span class="text-muted">([^<]+)<\/span>[\s\S]*?<div\b[^>]*class="[^"]*\bd-grid\b[^"]*"[^>]*>([\s\S]*?)<\/div>/gs;
 
       let match;
       while ((match = cardPattern.exec(text)) !== null) {
@@ -288,10 +287,21 @@ class UCSDBookingBot {
         const spotsText = match[4].trim();
         const actionHtml = match[5];
 
-        const btnMatch = bookBtnPattern.exec(actionHtml);
-        const isAvailable = btnMatch !== null;
+        const aptIdMatch = actionHtml.match(/data-apt-id="([^"]+)"/);
+        const timeslotIdMatch = actionHtml.match(/data-timeslot-id="([^"]+)"/);
+        const timeslotinstanceIdMatch = actionHtml.match(/data-timeslotinstance-id="([^"]+)"/);
+        const slotTextMatch = actionHtml.match(/data-slot-text="([^"]+)"/);
+        const spotsLeftTextMatch = actionHtml.match(/data-spots-left-text="([^"]+)"/);
 
-        const slot = {
+        const isAvailable = Boolean(
+          aptIdMatch &&
+          timeslotIdMatch &&
+          timeslotinstanceIdMatch &&
+          slotTextMatch &&
+          spotsLeftTextMatch
+        );
+
+        let slot = {
           slot_number: slotNum,
           time_display: timeDisplay,
           spots_left: spotsText,
@@ -300,10 +310,10 @@ class UCSDBookingBot {
         };
 
         if (isAvailable) {
-          slot.apt_id = btnMatch[1];
-          slot.timeslot_id = btnMatch[2];
-          slot.timeslotinstance_id = btnMatch[3];
-          slot.slot_text = btnMatch[4];
+          slot.apt_id = aptIdMatch[1];
+          slot.timeslot_id = timeslotIdMatch[1];
+          slot.timeslotinstance_id = timeslotinstanceIdMatch[1];
+          slot.slot_text = slotTextMatch ? slotTextMatch[1] : '';
         }
 
         if (availableOnly && !isAvailable) continue;
@@ -319,11 +329,23 @@ class UCSDBookingBot {
 
   async reserve(sport, facilityId, slot, date) {
     await this._ensureLoggedIn();
-    const productId = this._resolveProductId(sport);
-    const [y, m, d] = date.split('-');
+    
+    // Check if slot has required booking data
+    if (!slot.apt_id || !slot.timeslot_id || !slot.timeslotinstance_id) {
+      console.error('Slot missing required booking data:', slot);
+      throw new Error('Slot data is incomplete - cannot book this slot');
+    }
+    
+    const productId = await this._getProductId(sport);
+    const [y, m, d] = date.split('-').map((part, index) => {
+      if (index === 1 || index === 2) { // month or day
+        return part.padStart(2, '0'); // add leading zeros
+      }
+      return part;
+    });
 
     try {
-      const postData = new URLSearchParams({
+      const postData = {
         bId: productId,
         fId: facilityId,
         aId: slot.apt_id,
@@ -333,29 +355,53 @@ class UCSDBookingBot {
         m: m,
         d: d,
         t: '', // reCAPTCHA token
-        v: '0',
-      });
+        v: '0', // version
+      };
 
       console.log(`Reserving ${sport} on ${date} at ${slot.time_display}`);
+      console.log('Booking data:', postData);
 
       const resp = await this._fetchWithCookies(`${BASE_URL}/booking/reserve`, {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-          Accept: 'application/json, text/javascript, */*; q=0.01',
+          'Content-Type': 'application/json',
           Referer: `${BASE_URL}/booking/${productId}`,
         },
-        body: postData,
+        body: JSON.stringify(postData),
       });
 
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      if (!resp.ok) {
+        let errorMsg = `HTTP ${resp.status}`;
+        try {
+          const text = await resp.text();
+          if (text.includes('<!DOCTYPE html>') && text.includes('Error')) {
+            // Extract error message from HTML
+            const titleMatch = text.match(/<title>([^<]+)<\/title>/);
+            if (titleMatch) {
+              errorMsg += `: ${titleMatch[1]}`;
+            } else {
+              errorMsg += ': Server error (slot may no longer be available)';
+            }
+          } else {
+            // Try to parse as JSON
+            const errorData = JSON.parse(text);
+            if (errorData.ErrorMessage) {
+              errorMsg += `: ${errorData.ErrorMessage}`;
+            }
+          }
+        } catch (e) {
+          errorMsg += ': Server error (slot may no longer be available)';
+        }
+        console.error(`HTTP ${resp.status} response:`, errorMsg);
+        throw new Error(errorMsg);
+      }
 
       const result = await resp.json();
       if (result.Success) {
         console.log("Booking successful!");
         return true;
       } else {
-        console.error(`Booking failed: ${result}`);
+        console.error(`Booking failed: ${JSON.stringify(result)}`);
         return false;
       }
     } catch (error) {
@@ -378,12 +424,16 @@ class UCSDBookingBot {
   findConsecutiveSlots(slots, targetTime, numHours = 1) {
     if (numHours <= 0) return [];
     const first = this.findSlotByTime(slots, targetTime);
-    if (!first) return null;
+    if (!first) {
+      return null;
+    }
     const result = [first];
     for (let i = 1; i < numHours; i++) {
       const nextStart = extractStartTime(result[result.length - 1].time_display.split(' - ')[1]);
       const nxt = this.findSlotByTime(slots, nextStart);
-      if (!nxt) return null;
+      if (!nxt) {
+        return null;
+      }
       result.push(nxt);
     }
     return result;
@@ -443,9 +493,16 @@ class UCSDBookingBot {
     return null;
   }
 
-  async bookWhenOpen(sport, targetDate, targetTime, courtName = null, numHours = 1, pollInterval = 5.0, pollDurationMin = 5.0) {
+  async bookWhenOpen(sport = "tennis", targetDate = null, targetTime = "19:00", courtName = "North", numHours = 1, pollInterval = 5.0, pollDurationMin = 5.0) {
     const maxAttempts = Math.max(1, Math.floor(pollDurationMin * 60 / pollInterval));
     await this._ensureLoggedIn();
+
+    // Default to 3 days from now if no date provided
+    if (!targetDate) {
+      const futureDate = new Date();
+      futureDate.setDate(futureDate.getDate() + 3);
+      targetDate = futureDate.toISOString().split('T')[0];
+    }
 
     console.log(`Waiting for ${sport} slot on ${targetDate} at ${targetTime} (${numHours}h)${courtName ? ` (${courtName})` : ''}`);
 
@@ -516,11 +573,13 @@ class UCSDBookingBot {
     return await resp.text();
   }
 
-  async listAllSlots(sport, date = null, courtFilter = null) {
+  async listAllSlots(sport = "tennis", date = null, courtFilter = "North") {
     await this._ensureLoggedIn();
     if (!date) {
-      const dates = await this.getAvailableDates(sport);
-      date = dates.length > 0 ? dates[0] : new Date().toISOString().split('T')[0];
+      // Default to 3 days from now
+      const futureDate = new Date();
+      futureDate.setDate(futureDate.getDate() + 3);
+      date = futureDate.toISOString().split('T')[0];
     }
 
     let facilities = await this.getFacilities(sport);
@@ -545,13 +604,41 @@ class UCSDBookingBot {
     console.log();
   }
 
-  _resolveProductId(sport) {
+  async _getProductId(sport) {
+    if (this._cachedProductId) {
+      return this._cachedProductId;
+    }
+
+    // Try to get product ID from booking page
+    try {
+      const resp = await this._fetchWithCookies(`${BASE_URL}/booking`, {
+        method: 'GET',
+        headers: {
+          Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        },
+      });
+
+      if (resp.ok) {
+        const text = await resp.text();
+        const productLinks = text.match(/href="\/booking\/([a-f0-9-]+)"/g);
+        if (productLinks && productLinks.length > 0) {
+          const firstLink = productLinks[0];
+          const idMatch = firstLink.match(/\/booking\/([a-f0-9-]+)/);
+          if (idMatch) {
+            this._cachedProductId = idMatch[1];
+            console.log(`Using product ID from booking page: ${idMatch[1]}`);
+            return this._cachedProductId;
+          }
+        }
+      }
+    } catch (error) {
+      console.warn('Failed to get product ID from booking page:', error);
+    }
+
     const sportLower = sport.toLowerCase();
     if (SPORT_IDS[sportLower]) {
-      return SPORT_IDS[sportLower];
-    }
-    if (/^[0-9a-f-]{36}$/.test(sportLower)) {
-      return sport;
+      this._cachedProductId = SPORT_IDS[sportLower];
+      return this._cachedProductId;
     }
     throw new Error(`Unknown sport '${sport}'. Known: ${Object.keys(SPORT_IDS).join(', ')}`);
   }
