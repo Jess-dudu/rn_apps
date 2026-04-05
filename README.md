@@ -10,8 +10,9 @@ This workspace contains a React Native app for booking UCSD Recreation courts, c
 ## Getting Started
 
 1. Open in dev container
-2. `cd myapp && npm install && npm start`
-3. Run on device/emulator
+2. Create a new app: `npx create-expo-app -t blank ucsd-court-booking`
+3. Start an app: `cd ucsd-court-booking && npx expo install && npx expo start`
+4. Run on device/emulator
 
 ## Original Python Script
 
