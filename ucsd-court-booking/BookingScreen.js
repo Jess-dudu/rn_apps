@@ -13,9 +13,9 @@ const BookingScreen = () => {
 
   const [sport, setSport] = useState('tennis');
   const [date, setDate] = useState(getDefaultDate());
-  const [time, setTime] = useState('7:00 PM');
+  const [time, setTime] = useState('19');
   const [hours, setHours] = useState('1');
-  const [court, setCourt] = useState('North');
+  const [court, setCourt] = useState('North 10');
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState([]);
   const [bot, setBot] = useState(null);
@@ -119,15 +119,15 @@ const BookingScreen = () => {
         onChangeText={setDate}
       />
 
-      <Text>Time (e.g. 8:00 AM):</Text>
+      <Text>Time (e.g. 7:00 PM or 19):</Text>
       <TextInput
         style={styles.input}
-        placeholder="7:00 PM"
+        placeholder="19"
         value={time}
         onChangeText={setTime}
       />
 
-      <Text>Hours:</Text>
+      <Text>Hours (1 or 2):</Text>
       <TextInput
         style={styles.input}
         placeholder="1"
@@ -136,10 +136,10 @@ const BookingScreen = () => {
         keyboardType="numeric"
       />
 
-      <Text>Court Filter:</Text>
+      <Text>Court Filter (e.g. North 10):</Text>
       <TextInput
         style={styles.input}
-        placeholder="North"
+        placeholder="North 10"
         value={court}
         onChangeText={setCourt}
       />
