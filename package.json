@@ -1,5 +1,9 @@
 {
   "devDependencies": {
     "create-expo-app": "^3.5.3"
+  },
+  "dependencies": {
+    "expo": "^55.0.11",
+    "expo-dev-client": "~55.0.22"
   }
 }
