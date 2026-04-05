@@ -12,14 +12,16 @@ function normaliseTime(t) {
     t = t.slice(0, -2);
   }
   if (!t.includes(':')) t += ':00';
-  const [hour, minute] = t.split(':').map(Number);
+  let [hour, minute] = t.split(':').map(Number);
   if (!ampm) {
     if (hour >= 13) {
       ampm = 'pm';
+      hour -= 12;
     } else if (hour === 12) {
       ampm = 'pm';
     } else if (hour === 0) {
       ampm = 'am';
+      hour = 12;
     } else {
       ampm = 'am';
     }
@@ -56,6 +58,14 @@ function timesMatch(target, slotStart) {
 
 const BASE_URL = "https://rec.ucsd.edu";
 
+// Sport -> booking product ID mapping (discovered via /booking page)
+const SPORT_IDS = {
+  "tennis": "9f19b678-58ce-4dfc-bd78-7166bde9e265",
+  "pickleball": "a5e7e1e2-c5e4-4b3a-9f1d-2c8b3e4f5a6b",
+  "racquetball": "b6f8f2f3-d6f5-5c4b-af2e-3d9c4f5g6b7c",
+  "squash": "c7g9g3g4-e7g6-6d5c-bg3f-4eAd5g6h7c8d",
+};
+
 class UCSDBookingBot {
   constructor(username, password) {
     this.username = username;
@@ -63,50 +73,98 @@ class UCSDBookingBot {
     this.session = null; // We'll use fetch with headers
     this._loggedIn = false;
     this.csrfToken = null;
+    this.cookieHeader = '';
+  }
+
+  _extractCookies(setCookieHeader) {
+    if (!setCookieHeader) return '';
+    const rawCookies = Array.isArray(setCookieHeader)
+      ? setCookieHeader
+      : setCookieHeader.split(/,(?=[^\s])/g);
+    const cookies = rawCookies
+      .map((cookie) => cookie.split(';')[0].trim())
+      .filter(Boolean);
+    return cookies.join('; ');
+  }
+
+  async _fetchWithCookies(url, options = {}) {
+    const headers = {
+      'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+      'Accept-Language': 'en-US,en;q=0.9',
+      ...options.headers,
+    };
+    if (this.cookieHeader) {
+      headers.Cookie = this.cookieHeader;
+    }
+
+    const resp = await fetch(url, {
+      ...options,
+      headers,
+      credentials: 'include',
+    });
+
+    const setCookie = resp.headers.get('set-cookie');
+    if (setCookie) {
+      const extracted = this._extractCookies(setCookie);
+      if (extracted) {
+        this.cookieHeader = extracted;
+      }
+    }
+    return resp;
   }
 
   async login() {
     try {
       console.log("Fetching login page for CSRF token...");
-      const resp = await fetch(`${BASE_URL}/account/signinoptions`, {
+      const resp = await this._fetchWithCookies(`${BASE_URL}/account/signinoptions`, {
         method: 'GET',
         headers: {
-          'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-          'Accept-Language': 'en-US,en;q=0.9',
+          Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          Referer: `${BASE_URL}/`,
         },
-        credentials: 'include',
       });
 
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
 
       const text = await resp.text();
-      const csrfMatch = text.match(/__LocalAntiForgeryForm[^>]*>.*?value="([^"]+)"/s);
+      const csrfMatch = text.match(/name="__RequestVerificationToken"[^>]*value="([^"]+)"/) ||
+        text.match(/__LocalAntiForgeryForm[^>]*>[\s\S]*?value="([^"]+)"/);
       if (!csrfMatch) {
+        console.error('Login page HTML snippet:', text.slice(0, 800));
         throw new Error("Could not find CSRF token");
       }
       this.csrfToken = csrfMatch[1];
 
       console.log("Submitting credentials...");
-      const loginResp = await fetch(`${BASE_URL}/account/signin`, {
+      const loginResp = await this._fetchWithCookies(`${BASE_URL}/account/signin`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded',
           'X-Requested-With': 'XMLHttpRequest',
-          'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+          Accept: 'application/json, text/javascript, */*; q=0.01',
           'Accept-Language': 'en-US,en;q=0.9',
+          Origin: BASE_URL,
+          Referer: `${BASE_URL}/account/signinoptions`,
         },
         body: new URLSearchParams({
           '__RequestVerificationToken': this.csrfToken,
           'Username': this.username,
           'Password': this.password,
           'Redirect': '/booking',
-        }),
-        credentials: 'include',
+        }).toString(),
       });
 
       if (!loginResp.ok) throw new Error(`HTTP ${loginResp.status}`);
 
-      const result = await loginResp.json();
+      const responseText = await loginResp.text();
+      let result;
+      try {
+        result = JSON.parse(responseText);
+      } catch (e) {
+        console.error('Login response not JSON:', responseText.slice(0, 800));
+        return false;
+      }
+
       if (result.IsSucess) {
         console.log("Login successful");
         this._loggedIn = true;
@@ -134,13 +192,12 @@ class UCSDBookingBot {
     const productId = this._resolveProductId(sport);
 
     try {
-      const resp = await fetch(`${BASE_URL}/booking/${productId}/facilities`, {
+      const resp = await this._fetchWithCookies(`${BASE_URL}/booking/${productId}/facilities`, {
         method: 'GET',
         headers: {
-          'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-          'Accept-Language': 'en-US,en;q=0.9',
+          Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          Referer: `${BASE_URL}/booking/${productId}`,
         },
-        credentials: 'include',
       });
 
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
@@ -173,13 +230,12 @@ class UCSDBookingBot {
     const productId = this._resolveProductId(sport);
 
     try {
-      const resp = await fetch(`${BASE_URL}/booking/${productId}/dates`, {
+      const resp = await this._fetchWithCookies(`${BASE_URL}/booking/${productId}/dates`, {
         method: 'GET',
         headers: {
-          'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-          'Accept-Language': 'en-US,en;q=0.9',
+          Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          Referer: `${BASE_URL}/booking/${productId}`,
         },
-        credentials: 'include',
       });
 
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
@@ -203,13 +259,12 @@ class UCSDBookingBot {
     const [y, m, d] = date.split('-');
 
     try {
-      const resp = await fetch(`${BASE_URL}/booking/${productId}/slots/${facilityId}/${y}/${m}/${d}`, {
+      const resp = await this._fetchWithCookies(`${BASE_URL}/booking/${productId}/slots/${facilityId}/${y}/${m}/${d}`, {
         method: 'GET',
         headers: {
-          'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-          'Accept-Language': 'en-US,en;q=0.9',
+          Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          Referer: `${BASE_URL}/booking/${productId}`,
         },
-        credentials: 'include',
       });
 
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
@@ -240,6 +295,7 @@ class UCSDBookingBot {
           slot_number: slotNum,
           time_display: timeDisplay,
           spots_left: spotsText,
+          available: isAvailable,
           participant_id: participantId,
         };
 
@@ -282,15 +338,14 @@ class UCSDBookingBot {
 
       console.log(`Reserving ${sport} on ${date} at ${slot.time_display}`);
 
-      const resp = await fetch(`${BASE_URL}/booking/reserve`, {
+      const resp = await this._fetchWithCookies(`${BASE_URL}/booking/reserve`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded',
-          'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-          'Accept-Language': 'en-US,en;q=0.9',
+          Accept: 'application/json, text/javascript, */*; q=0.01',
+          Referer: `${BASE_URL}/booking/${productId}`,
         },
         body: postData,
-        credentials: 'include',
       });
 
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
@@ -352,17 +407,142 @@ class UCSDBookingBot {
 
   async cancel(participantId) {
     await this._ensureLoggedIn();
-    const resp = await fetch(`${BASE_URL}/booking/delete/${participantId}`, {
+    const resp = await this._fetchWithCookies(`${BASE_URL}/booking/delete/${participantId}`, {
       method: 'POST',
       headers: {
-        'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-        'Accept-Language': 'en-US,en;q=0.9',
+        Accept: 'application/json, text/javascript, */*; q=0.01',
+        Referer: `${BASE_URL}/booking`,
       },
-      credentials: 'include',
     });
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const result = await resp.json();
     return !!result;
+  }
+
+  findAnySlotInWindow(allSlots, targetTime, numHours) {
+    let currentTime = targetTime;
+    for (let i = 0; i < numHours; i++) {
+      const targetNorm = normaliseTime(currentTime);
+      let slotInfo = null;
+      for (const s of allSlots) {
+        const start = extractStartTime(s.time_display);
+        if (timesMatch(targetNorm, start)) {
+          slotInfo = s;
+          break;
+        }
+      }
+      if (!slotInfo) break;
+      if (slotInfo.available) {
+        return slotInfo;
+      }
+      // Advance to the next hour using this slot's end time
+      const parts = slotInfo.time_display.split(' - ');
+      if (parts.length < 2) break;
+      currentTime = parts[1].trim();
+    }
+    return null;
+  }
+
+  async bookWhenOpen(sport, targetDate, targetTime, courtName = null, numHours = 1, pollInterval = 5.0, pollDurationMin = 5.0) {
+    const maxAttempts = Math.max(1, Math.floor(pollDurationMin * 60 / pollInterval));
+    await this._ensureLoggedIn();
+
+    console.log(`Waiting for ${sport} slot on ${targetDate} at ${targetTime} (${numHours}h)${courtName ? ` (${courtName})` : ''}`);
+
+    // Sleep until midnight (next 00:00:00)
+    const now = new Date();
+    const midnight = new Date(now);
+    midnight.setDate(midnight.getDate() + 1);
+    midnight.setHours(0, 0, 0, 0);
+    const waitSecs = (midnight - now) / 1000;
+    console.log(`Sleeping until midnight (${midnight.toISOString().split('T')[0]} 00:00:00) before polling — ${(waitSecs / 3600).toFixed(2)}h (${(waitSecs / 60).toFixed(1)} min) to go...`);
+    
+    await new Promise(resolve => setTimeout(resolve, waitSecs * 1000));
+    console.log("Midnight reached — starting to poll now.");
+
+    let facilities = await this.getFacilities(sport);
+    if (courtName) {
+      facilities = facilities.filter(f => f.name.toLowerCase().includes(courtName.toLowerCase()));
+      if (facilities.length === 0) {
+        console.error(`No facility matching '${courtName}'`);
+        return false;
+      }
+    }
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        for (const facility of facilities) {
+          const slots = await this.getSlots(sport, facility.id, targetDate);
+          const consecutive = this.findConsecutiveSlots(slots, targetTime, numHours);
+          if (consecutive) {
+            console.log(`Found ${numHours} consecutive slot(s) on attempt ${attempt} at ${facility.name}`);
+            return await this.reserveMulti(sport, facility.id, consecutive, targetDate);
+          }
+
+          // Fallback: book any single available slot in the window
+          if (numHours > 1) {
+            const allSlots = await this.getSlots(sport, facility.id, targetDate, false);
+            const slot = this.findAnySlotInWindow(allSlots, targetTime, numHours);
+            if (slot) {
+              console.log(`Full ${numHours}h window unavailable; booking partial slot ${slot.time_display} at ${facility.name}`);
+              return await this.reserve(sport, facility.id, slot, targetDate);
+            }
+          }
+        }
+
+        const elapsedMin = (attempt * pollInterval) / 60;
+        console.log(`Attempt ${attempt}/${maxAttempts} (${elapsedMin.toFixed(1)}/${pollDurationMin.toFixed(0)} min): no slot yet, retrying in ${pollInterval.toFixed(0)}s...`);
+        await new Promise(resolve => setTimeout(resolve, pollInterval * 1000));
+      } catch (error) {
+        console.warn(`Network error on attempt ${attempt}: ${error}`);
+        await new Promise(resolve => setTimeout(resolve, pollInterval * 2 * 1000));
+      }
+    }
+
+    console.error(`Gave up after ${maxAttempts} attempts`);
+    return false;
+  }
+
+  async getMyBookings() {
+    await this._ensureLoggedIn();
+    const resp = await this._fetchWithCookies(`${BASE_URL}/booking/mybookings/10`, {
+      method: 'GET',
+      headers: {
+        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        Referer: `${BASE_URL}/booking`,
+      },
+    });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    return await resp.text();
+  }
+
+  async listAllSlots(sport, date = null, courtFilter = null) {
+    await this._ensureLoggedIn();
+    if (!date) {
+      const dates = await this.getAvailableDates(sport);
+      date = dates.length > 0 ? dates[0] : new Date().toISOString().split('T')[0];
+    }
+
+    let facilities = await this.getFacilities(sport);
+    if (courtFilter) {
+      facilities = facilities.filter(f => f.name.toLowerCase().includes(courtFilter.toLowerCase()));
+    }
+
+    const filterNote = courtFilter ? ` (filter: '${courtFilter}')` : '';
+    console.log(`\n${'='.repeat(60)}`);
+    console.log(`  ${sport.toUpperCase()} -- Available slots on ${date}${filterNote}`);
+    console.log(`${'='.repeat(60)}`);
+
+    for (const fac of facilities) {
+      const slots = await this.getSlots(sport, fac.id, date);
+      if (slots.length > 0) {
+        console.log(`\n  ${fac.name}`);
+        for (const s of slots) {
+          console.log(`     ${s.time_display.padEnd(20)}  (${s.spots_left})`);
+        }
+      }
+    }
+    console.log();
   }
 
   _resolveProductId(sport) {
