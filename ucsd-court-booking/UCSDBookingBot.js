@@ -254,84 +254,75 @@ class UCSDBookingBot {
     }
   }
 
-  async getSlots(sport, facilityId, date, availableOnly = true) {
+async getSlots(sport, facilityId, date, availableOnly = true) {
     await this._ensureLoggedIn();
     const productId = await this._getProductId(sport);
     const [y, m, d] = date.split('-');
 
     try {
-      const resp = await this._fetchWithCookies(`${BASE_URL}/booking/${productId}/slots/${facilityId}/${y}/${m}/${d}`, {
-        method: 'GET',
-        headers: {
-          Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-          Referer: `${BASE_URL}/booking/${productId}`,
-        },
-      });
+        const resp = await this._fetchWithCookies(`${BASE_URL}/booking/${productId}/slots/${facilityId}/${y}/${m}/${d}`);
+        const text = await resp.text();
 
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        // 1. Pre-process the text to remove non-breaking spaces and extra noise
+        const cleanText = text.replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ');
 
-      const text = await resp.text();
-      if (text.startsWith('<!DOCTYPE')) {
-        console.warn("Slots endpoint returned full HTML page");
-        return [];
-      }
+        const slots = [];
+        // 2. Identify each slot block by finding the start of a card
+        const cardBlocks = cleanText.split('data-slot-number="');
+        
+        // Skip index 0 as it's the header before the first slot
+        for (let i = 1; i < cardBlocks.length; i++) {
+            const block = cardBlocks[i];
+            
+            // Extract the slot number (first thing in the string now)
+            const slotNum = block.match(/^([^"]+)"/)?.[1];
+            
+            // Extract Time: Look for the first <strong> content
+            const timeMatch = block.match(/<strong>(.*?)<\/strong>/);
+            const timeDisplay = timeMatch ? timeMatch[1].trim() : "";
 
-      const slots = [];
-      const cardPattern = /<div\b[^>]*class="[^"]*\bcard\b[^"]*\bh-100\b[^"]*"[^>]*data-slot-number="([^"]+)"[^>]*data-participant-id="([^"]*)"[^>]*>[\s\S]*?<strong>([^<]+)<\/strong>[\s\S]*?<span class="text-muted">([^<]+)<\/span>[\s\S]*?<div\b[^>]*class="[^"]*\bd-grid\b[^"]*"[^>]*>([\s\S]*?)<\/div>/gs;
+            // Extract Availability Text: Look for the specific "spots available" span
+            const spotsMatch = block.match(/<span[^>]*class="text-muted"[^>]*>(.*?)<\/span>/);
+            const spotsText = spotsMatch ? spotsMatch[1].trim() : "";
 
-      let match;
-      while ((match = cardPattern.exec(text)) !== null) {
-        const slotNum = match[1];
-        const participantId = match[2];
-        const timeDisplay = match[3].trim();
-        const spotsText = match[4].trim();
-        const actionHtml = match[5];
+            // Extract the IDs needed for booking
+            const aptId = block.match(/data-apt-id="([^"]+)"/)?.[1];
+            const tsId = block.match(/data-timeslot-id="([^"]+)"/)?.[1];
+            const tsiId = block.match(/data-timeslotinstance-id="([^"]+)"/)?.[1];
+            const participantId = block.match(/data-participant-id="([^"]*)"/)?.[1];
 
-        const aptIdMatch = actionHtml.match(/data-apt-id="([^"]+)"/);
-        const timeslotIdMatch = actionHtml.match(/data-timeslot-id="([^"]+)"/);
-        const timeslotinstanceIdMatch = actionHtml.match(/data-timeslotinstance-id="([^"]+)"/);
-        const slotTextMatch = actionHtml.match(/data-slot-text="([^"]+)"/);
-        const spotsLeftTextMatch = actionHtml.match(/data-spots-left-text="([^"]+)"/);
+            // LOGIC: A slot is available if:
+            // - It has an aptId (The "Book Now" button exists)
+            // - It doesn't explicitly say "No spots available" or "Full"
+            const isFull = spotsText.toLowerCase().includes("no spots") || spotsText.toLowerCase().includes("full");
+            const isAvailable = Boolean(aptId) && !isFull;
 
-        const hasBookingData = Boolean(
-          aptIdMatch &&
-          timeslotIdMatch &&
-          timeslotinstanceIdMatch &&
-          slotTextMatch &&
-          spotsLeftTextMatch
-        );
+            let slot = {
+                slot_number: slotNum,
+                time_display: timeDisplay,
+                spots_left: spotsText,
+                available: isAvailable,
+                participant_id: participantId || "",
+            };
 
-        // Parse spots left number
-        const spotsLeftMatch = spotsText.match(/(\d+)/);
-        const spotsLeftNum = spotsLeftMatch ? parseInt(spotsLeftMatch[1]) : (spotsText.toLowerCase().includes('full') ? 0 : 999);
+            if (isAvailable) {
+                slot.apt_id = aptId;
+                slot.timeslot_id = tsId;
+                slot.timeslotinstance_id = tsiId;
+                slot.slot_text = block.match(/data-slot-text="([^"]+)"/)?.[1] || '';
+            }
 
-        const isAvailable = hasBookingData && spotsLeftNum > 0;
-
-        let slot = {
-          slot_number: slotNum,
-          time_display: timeDisplay,
-          spots_left: spotsText,
-          available: isAvailable,
-          participant_id: participantId,
-        };
-
-        if (isAvailable) {
-          slot.apt_id = aptIdMatch[1];
-          slot.timeslot_id = timeslotIdMatch[1];
-          slot.timeslotinstance_id = timeslotinstanceIdMatch[1];
-          slot.slot_text = slotTextMatch ? slotTextMatch[1] : '';
+            if (availableOnly && !isAvailable) continue;
+            slots.push(slot);
         }
-
-        if (availableOnly && !isAvailable) continue;
-        slots.push(slot);
-      }
-
-      return slots;
+        
+        console.log(`Parsed ${slots.length} available slots for ${date}`);
+        return slots;
     } catch (error) {
-      console.error("Get slots error:", error);
-      return [];
+        console.error("Get slots error:", error);
+        return [];
     }
-  }
+}
 
   async reserve(sport, facilityId, slot, date) {
     await this._ensureLoggedIn();
