@@ -1,10 +1,18 @@
 # RN_APPS
 
-Create a devcontainer for learning React Native App Development with Expo.
-- npx create-expo-app app-hello
-- cd app-hello
-- npx expo start
+This workspace contains a React Native app for booking UCSD Recreation courts, converted from a Python command-line script.
 
-Help documents:
-- Dev Container for React Native with Expo (https://dev.to/animusna/dev-container-for-react-native-with-expo-f7j)
-- Coding Garden: You should be using Dev Containers (https://www.youtube.com/watch?v=kPMA9cnpScU)
+## Structure
+
+- `myapp/`: React Native (Expo) app with GUI for court booking
+- `ref/`: Original Python command-line booking bot
+
+## Getting Started
+
+1. Open in dev container
+2. `cd myapp && npm install && npm start`
+3. Run on device/emulator
+
+## Original Python Script
+
+See `ref/README.md` for details on the command-line version.
