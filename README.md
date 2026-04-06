@@ -1,21 +1,22 @@
 # RN_APPS
 
 This workspace contains a React Native app for booking UCSD Recreation courts, converted from a Python command-line script.
+TypeScript (tsc -v): 6.0.2
+Expo (npx expo -v): 55.0.21
 
 ## Structure
 
-- `myapp/`: React Native (Expo) app with GUI for court booking
+- `ucsd-court-booking/`: React Native (Expo) app with GUI for court booking
 - `ref/`: Original Python command-line booking bot
 
-## Setup Expo
-1. npm install expo
-2. npx expo install expo-dev-client
-3. npm i -g eas-cli
+## Setup Expo Development Build
+1. npx expo install expo-dev-client
+2. npm i -g eas-cli
 
 ## Getting Started
 
 1. Open in dev container
-2. Create a new app: `npx create-expo-app -t blank ucsd-court-booking`
+2. Create a new app: `npx create-expo-app@latest -t blank ucsd-court-booking`
 3. Change working dir: `cd ucsd-court-booking && npx expo install`
 4. Using Expo Go: `npx expo start`
 5. EAS build: eas login / eas init / eas build:configure
