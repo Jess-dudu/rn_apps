@@ -4,8 +4,9 @@ UCSD Recreation Court Booking Bot
 Target: https://rec.ucsd.edu  (Innosoft Fusion platform)
 
 Discovered API endpoints:
-  Login:      GET  /account/signinoptions  -> extract CSRF token
-              POST /account/signin         -> authenticate
+  Login:      GET  /account/signin/password?email=... -> password form + CSRF token
+              POST /account/signin                     -> authenticate (community accounts)
+              GET  /account/login                      -> SSO entry point (UCSD Shibboleth)
   Facilities: GET  /booking/{id}/facilities
   Dates:      GET  /booking/{id}/dates
   Slots:      GET  /booking/{id}/slots/{facilityId}/{year}/{month}/{day}
@@ -28,6 +29,7 @@ import re
 import sys
 import time
 from datetime import datetime, timedelta
+from html.parser import HTMLParser
 from pathlib import Path
 
 import requests
@@ -180,6 +182,94 @@ SPORT_IDS = {
 }
 
 
+class _SlotCardHTMLParser(HTMLParser):
+    """Parse Innosoft slot cards without regex crossing card boundaries."""
+
+    def __init__(self):
+        super().__init__()
+        self.slots: list[dict] = []
+        self._card_depth = 0
+        self._current_slot: dict | None = None
+        self._capture_text_for: str | None = None
+
+    @staticmethod
+    def _attrs_to_dict(attrs: list[tuple[str, str | None]]) -> dict[str, str]:
+        return {k: (v or "") for k, v in attrs}
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attrs_dict = self._attrs_to_dict(attrs)
+        class_attr = attrs_dict.get("class", "")
+
+        if tag == "div":
+            # The slot wrapper carries data-slot-number; its CSS class varies
+            # across Innosoft Fusion versions so we key on the data attribute only.
+            if "data-slot-number" in attrs_dict:
+                self._current_slot = {
+                    "slot_number": attrs_dict.get("data-slot-number", "").strip(),
+                    "participant_id": attrs_dict.get("data-participant-id", "").strip(),
+                    "time_display": "",
+                    "spots_left": "",
+                    "available": False,
+                }
+                self._card_depth = 1
+                return
+
+            if self._current_slot is not None and self._card_depth > 0:
+                self._card_depth += 1
+                return
+
+        if self._current_slot is None:
+            return
+
+        # Time display: old=<strong>, new=<span class="slot-time">
+        is_time_tag = tag == "strong" or (tag == "span" and "slot-time" in class_attr)
+        if is_time_tag and not self._current_slot.get("time_display"):
+            self._capture_text_for = "time_display"
+        # Spots left: old=<span class="text-muted">, new=<span class="spots-available">
+        elif (
+            tag == "span"
+            and ("text-muted" in class_attr or "spots-available" in class_attr)
+            and not self._current_slot.get("spots_left")
+        ):
+            self._capture_text_for = "spots_left"
+        elif tag == "button" and attrs_dict.get("data-apt-id"):
+            self._current_slot["available"] = True
+            self._current_slot["apt_id"] = attrs_dict.get("data-apt-id", "").strip()
+            self._current_slot["timeslot_id"] = attrs_dict.get(
+                "data-timeslot-id", ""
+            ).strip()
+            self._current_slot["timeslotinstance_id"] = attrs_dict.get(
+                "data-timeslotinstance-id", ""
+            ).strip()
+            self._current_slot["slot_text"] = attrs_dict.get(
+                "data-slot-text", ""
+            ).strip()
+            if attrs_dict.get("data-spots-left-text"):
+                self._current_slot["spots_left"] = attrs_dict.get(
+                    "data-spots-left-text", ""
+                ).strip()
+
+    def handle_data(self, data: str) -> None:
+        if self._current_slot is None or self._capture_text_for is None:
+            return
+        text = data.strip()
+        if text:
+            existing = self._current_slot.get(self._capture_text_for, "")
+            self._current_slot[self._capture_text_for] = (
+                f"{existing} {text}".strip() if existing else text
+            )
+
+    def handle_endtag(self, tag: str) -> None:
+        if self._capture_text_for is not None and tag in {"strong", "span"}:
+            self._capture_text_for = None
+
+        if tag == "div" and self._current_slot is not None and self._card_depth > 0:
+            self._card_depth -= 1
+            if self._card_depth == 0:
+                self.slots.append(self._current_slot)
+                self._current_slot = None
+
+
 class UCSDBookingBot:
     """Bot for booking courts at UCSD Recreation (rec.ucsd.edu)."""
 
@@ -208,14 +298,35 @@ class UCSDBookingBot:
 
     def login(self) -> bool:
         """Login to rec.ucsd.edu. Returns True on success."""
+        # Two-step login for community/local accounts:
+        #   Step 1: GET /account/signin/password?email=... -> password form + CSRF token
+        #   Step 2: POST /account/signin/password with email, password, CSRF token
+        password_url = f"{BASE_URL}/account/signin/password"
+
         log.info("Fetching login page for CSRF token...")
+        # Step 0: visit the login landing page to establish the session cookie,
+        # exactly as a browser would before submitting the email form.
+        self.session.get(
+            f"{BASE_URL}/account/login",
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=self.REQUEST_TIMEOUT,
+        )
+        # Step 1: submit the email to get the password form + CSRF token.
+        # Use a minimal User-Agent so the server returns a lean page with only
+        # the password form's token (not extra nav-bar search-form tokens).
         resp = self.session.get(
-            f"{BASE_URL}/account/signinoptions", timeout=self.REQUEST_TIMEOUT
+            password_url,
+            params={"email": self.username},
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=self.REQUEST_TIMEOUT,
         )
         resp.raise_for_status()
 
+        # Find the token specifically inside the password form (id="form-signin-password").
+        # The page also contains search-form tokens; using the wrong one causes 403.
         m = re.search(
-            r'__LocalAntiForgeryForm[^>]*>.*?value="([^"]+)"',
+            r'id="form-signin-password".*?'
+            r'name="__RequestVerificationToken"[^>]*value="([^"]+)"',
             resp.text,
             re.DOTALL,
         )
@@ -225,13 +336,15 @@ class UCSDBookingBot:
         csrf = m.group(1)
 
         log.info("Submitting credentials...")
+        # The signin endpoint is an AJAX endpoint that returns JSON.
+        # Field names are Username/Password (capital), not email/password.
         login_resp = self.session.post(
             f"{BASE_URL}/account/signin",
             data={
                 "__RequestVerificationToken": csrf,
                 "Username": self.username,
                 "Password": self.password,
-                "Redirect": "/booking",
+                "returnUrl": "",
             },
             headers={"X-Requested-With": "XMLHttpRequest"},
             timeout=self.REQUEST_TIMEOUT,
@@ -239,13 +352,13 @@ class UCSDBookingBot:
         login_resp.raise_for_status()
 
         result = login_resp.json()
-        if result.get("IsSucess"):
-            log.info("Login successful")
-            self._logged_in = True
-            return True
-        else:
+        if not result.get("IsSuccess"):
             log.error(f"Login failed: {result.get('ErrorMessage', 'unknown error')}")
             return False
+
+        log.info("Login successful")
+        self._logged_in = True
+        return True
 
     def _ensure_logged_in(self):
         if not self._logged_in:
@@ -337,63 +450,12 @@ class UCSDBookingBot:
             log.warning("Slots endpoint returned full HTML page (session issue?)")
             return []
 
+        parser = _SlotCardHTMLParser()
+        parser.feed(resp.text)
+
         slots = []
-
-        # Parse every card (slot) in the response HTML.
-        # A bookable slot has a button with onclick="Reserve(this)" and data-apt-id.
-        # An unavailable slot has a plain disabled button with no data attributes.
-        card_pattern = re.compile(
-            r'<div class="card h-100"'
-            r'\s+data-slot-number="(\d+)"'
-            r'\s+data-participant-id="([^"]*)"'
-            r".*?"
-            r"<strong>([^<]+)</strong>"  # time display
-            r".*?"
-            r'<span class="text-muted">([^<]+)</span>'  # spots text
-            r".*?"
-            r'<div class="d-grid[^"]*">(.*?)</div>',  # matches both bookable and unavailable
-            re.DOTALL,
-        )
-
-        # Pattern for a bookable button
-        book_btn_pattern = re.compile(
-            r'data-apt-id="([^"]+)".*?'
-            r'data-timeslot-id="([^"]+)".*?'
-            r'data-timeslotinstance-id="([^"]+)".*?'
-            r'data-slot-text="([^"]+)".*?'
-            r'data-spots-left-text="([^"]+)"',
-            re.DOTALL,
-        )
-
-        for m_card in card_pattern.finditer(resp.text):
-            slot_num = m_card.group(1)
-            participant_id = m_card.group(2)
-            time_display = m_card.group(3).strip()
-            spots_text = m_card.group(4).strip()
-            action_html = m_card.group(5)
-
-            m_btn = book_btn_pattern.search(action_html)
-            is_available = m_btn is not None
-
-            slot = {
-                "slot_number": slot_num,
-                "time_display": time_display,
-                "spots_left": spots_text,
-                "available": is_available,
-                "participant_id": participant_id,
-            }
-
-            if is_available:
-                slot.update(
-                    {
-                        "apt_id": m_btn.group(1),
-                        "timeslot_id": m_btn.group(2),
-                        "timeslotinstance_id": m_btn.group(3),
-                        "slot_text": m_btn.group(4),
-                    }
-                )
-
-            if available_only and not is_available:
+        for slot in parser.slots:
+            if available_only and not slot.get("available"):
                 continue
             slots.append(slot)
 
@@ -775,11 +837,20 @@ class UCSDBookingBot:
         print(f"{'=' * 60}")
 
         for fac in facilities:
-            slots = self.get_slots(sport, fac["id"], date)
-            if slots:
+            # Use available_only=False so slots with spots but no booking button
+            # (e.g. when the daily limit is reached) are still listed.
+            all_slots = self.get_slots(sport, fac["id"], date, available_only=False)
+            # Show only slots that have at least one spot left (skip "No spots available").
+            visible = [
+                s
+                for s in all_slots
+                if s.get("spots_left") and "no spots" not in s["spots_left"].lower()
+            ]
+            if visible:
                 print(f"\n  {fac['name']}")
-                for s in slots:
-                    print(f"     {s['time_display']:20s}  ({s['spots_left']})")
+                for s in visible:
+                    status = "" if s.get("available") else "  [limit reached]"
+                    print(f"     {s['time_display']:20s}  ({s['spots_left']}){status}")
         print()
 
 
