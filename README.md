@@ -7,7 +7,7 @@ Expo (npx expo -v): 55.0.21
 ## Structure
 
 - `ucsd-court-booking/`: React Native (Expo) app with GUI for court booking
-- `ref/`: Original Python command-line booking bot
+- `ref_python/`: Original Python command-line booking bot
 
 ## Setup Expo Development Build
 1. npx expo install expo-dev-client

@@ -75,6 +75,9 @@ class UCSDBookingBot {
     this.csrfToken = null;
     this.cookieHeader = '';
     this._cachedProductId = null;
+
+    // --- ADD THIS LINE ---
+    this._loginInProgress = null;  
   }
 
   _extractCookies(setCookieHeader) {
@@ -115,72 +118,99 @@ class UCSDBookingBot {
   }
 
   async login() {
-    try {
-      console.log("Fetching login page for CSRF token...");
-      const resp = await this._fetchWithCookies(`${BASE_URL}/account/signinoptions`, {
-        method: 'GET',
-        headers: {
-          Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-          Referer: `${BASE_URL}/`,
-        },
-      });
-
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-
-      const text = await resp.text();
-      const csrfMatch = text.match(/name="__RequestVerificationToken"[^>]*value="([^"]+)"/) ||
-        text.match(/__LocalAntiForgeryForm[^>]*>[\s\S]*?value="([^"]+)"/);
-      if (!csrfMatch) {
-        console.error('Login page HTML snippet:', text.slice(0, 800));
-        throw new Error("Could not find CSRF token");
-      }
-      this.csrfToken = csrfMatch[1];
-
-      console.log("Submitting credentials...");
-      const loginResp = await this._fetchWithCookies(`${BASE_URL}/account/signin`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-          'X-Requested-With': 'XMLHttpRequest',
-          Accept: 'application/json, text/javascript, */*; q=0.01',
-          'Accept-Language': 'en-US,en;q=0.9',
-          Origin: BASE_URL,
-          Referer: `${BASE_URL}/account/signinoptions`,
-        },
-        body: new URLSearchParams({
-          '__RequestVerificationToken': this.csrfToken,
-          'Username': this.username,
-          'Password': this.password,
-          'Redirect': '/booking',
-        }).toString(),
-      });
-
-      if (!loginResp.ok) throw new Error(`HTTP ${loginResp.status}`);
-
-      const responseText = await loginResp.text();
-      let result;
       try {
-        result = JSON.parse(responseText);
-      } catch (e) {
-        console.error('Login response not JSON:', responseText.slice(0, 800));
-        return false;
-      }
+        console.log("Establishing session...");
+        // Step 1: Visit the login entry point
+        const initialResp = await this._fetchWithCookies(`${BASE_URL}/account/login`, {
+          method: 'GET',
+          headers: { 'User-Agent': 'Mozilla/5.0' },
+        });
+        const initialText = await initialResp.text();
 
-      if (result.IsSucess) {
-        console.log("Login successful");
-        this._loggedIn = true;
-        return true;
-      } else {
-        console.error(`Login failed: ${result.ErrorMessage || 'unknown error'}`);
+        // --- ADDED: Check if already logged in ---
+        if (initialText.includes('/account/logout') || initialText.includes('id="logoutForm"')) {
+          console.log("Existing session detected. Skipping login steps.");
+          this._loggedIn = true;
+          return true;
+        }
+
+        console.log("Fetching password form for CSRF token...");
+        // Step 2: Get the password form
+        const resp = await this._fetchWithCookies(`${BASE_URL}/account/signin/password?email=${encodeURIComponent(this.username)}`, {
+          method: 'GET',
+          headers: { 'User-Agent': 'Mozilla/5.0' },
+        });
+
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const text = await resp.text();
+        
+        // Step 3: Extract the CSRF token
+        const csrfRegex = /id="form-signin-password".*?name="__RequestVerificationToken"[^>]*value="([^"]+)"/s;
+        const csrfMatch = text.match(csrfRegex);
+        
+        if (!csrfMatch) {
+          throw new Error("Could not find password-form specific CSRF token");
+        }
+        this.csrfToken = csrfMatch[1];
+
+        console.log("Submitting credentials...");
+        // Step 4: Submit login
+        const loginResp = await this._fetchWithCookies(`${BASE_URL}/account/signin`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+            'X-Requested-With': 'XMLHttpRequest',
+            'Referer': `${BASE_URL}/account/signin/password?email=${encodeURIComponent(this.username)}`,
+          },
+          body: new URLSearchParams({
+            '__RequestVerificationToken': this.csrfToken,
+            'Username': this.username,
+            'Password': this.password,
+            'returnUrl': '',
+          }).toString(),
+        });
+
+        if (!loginResp.ok) throw new Error(`HTTP ${loginResp.status}`);
+        const result = await loginResp.json();
+
+        // Check for 'IsSuccess' or 'Success'
+        if (result.IsSuccess || result.Success) {
+          console.log("Login successful");
+          this._loggedIn = true;
+          return true;
+        } else {
+          console.error(`Login failed: ${result.ErrorMessage || 'unknown error'}`);
+          return false;
+        }
+      } catch (error) {
+        console.error("Login error:", error);
         return false;
       }
-    } catch (error) {
-      console.error("Login error:", error);
-      return false;
     }
-  }
 
-  async _ensureLoggedIn() {
+    // --- UPDATED: This prevents double-login attempts ---
+    async _ensureLoggedIn() {
+      // If already logged in, just return
+      if (this._loggedIn) return;
+
+      // If a login is currently happening, wait for that same promise
+      if (this._loginInProgress) {
+        console.log("Login already in progress, waiting...");
+        return this._loginInProgress;
+      }
+
+      // Create the login promise and store it in the class
+      this._loginInProgress = this.login();
+
+      try {
+        const result = await this._loginInProgress;
+        if (!result) throw new Error("Authentication failed");
+      } finally {
+        // Always clear the progress marker when done
+        this._loginInProgress = null;
+      }
+    }
+      async _ensureLoggedIn() {
     if (!this._loggedIn) {
       if (!(await this.login())) {
         throw new Error("Authentication failed");
