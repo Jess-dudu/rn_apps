@@ -75,9 +75,6 @@ class UCSDBookingBot {
     this.csrfToken = null;
     this.cookieHeader = '';
     this._cachedProductId = null;
-
-    // --- ADD THIS LINE ---
-    this._loginInProgress = null;  
   }
 
   _extractCookies(setCookieHeader) {
@@ -190,27 +187,6 @@ class UCSDBookingBot {
 
     // --- UPDATED: This prevents double-login attempts ---
     async _ensureLoggedIn() {
-      // If already logged in, just return
-      if (this._loggedIn) return;
-
-      // If a login is currently happening, wait for that same promise
-      if (this._loginInProgress) {
-        console.log("Login already in progress, waiting...");
-        return this._loginInProgress;
-      }
-
-      // Create the login promise and store it in the class
-      this._loginInProgress = this.login();
-
-      try {
-        const result = await this._loginInProgress;
-        if (!result) throw new Error("Authentication failed");
-      } finally {
-        // Always clear the progress marker when done
-        this._loginInProgress = null;
-      }
-    }
-      async _ensureLoggedIn() {
     if (!this._loggedIn) {
       if (!(await this.login())) {
         throw new Error("Authentication failed");
@@ -466,22 +442,6 @@ async getSlots(sport, facilityId, date, availableOnly = true) {
     return result;
   }
 
-  async reserveMulti(sport, facilityId, slots, date) {
-    const bookedIds = [];
-    for (const slot of slots) {
-      const success = await this.reserve(sport, facilityId, slot, date);
-      if (!success) {
-        // Cancel previous
-        for (const pid of bookedIds) {
-          await this.cancel(pid);
-        }
-        return false;
-      }
-      bookedIds.push(slot.participant_id);
-    }
-    return true;
-  }
-
   async cancel(participantId) {
     await this._ensureLoggedIn();
     const resp = await this._fetchWithCookies(`${BASE_URL}/booking/delete/${participantId}`, {
@@ -556,22 +516,32 @@ async getSlots(sport, facilityId, date, availableOnly = true) {
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
         for (const facility of facilities) {
-          const slots = await this.getSlots(sport, facility.id, targetDate);
-          const consecutive = this.findConsecutiveSlots(slots, targetTime, numHours);
-          if (consecutive) {
-            console.log(`Found ${numHours} consecutive slot(s) on attempt ${attempt} at ${facility.name}`);
-            return await this.reserveMulti(sport, facility.id, consecutive, targetDate);
+          // Get all slots (including unavailable) so we can walk the full time window
+          const allSlots = await this.getSlots(sport, facility.id, targetDate, false);
+          let currentTime = targetTime;
+          let bookedCount = 0;
+
+          for (let i = 0; i < numHours; i++) {
+            const slot = this.findSlotByTime(allSlots, currentTime);
+            if (!slot) break; // no more slots in window
+
+            if (slot.available) {
+              const success = await this.reserve(sport, facility.id, slot, targetDate);
+              if (success) {
+                console.log(`Booked slot ${slot.time_display} at ${facility.name}`);
+                bookedCount++;
+              }
+            } else {
+              console.log(`Slot ${slot.time_display} unavailable, skipping`);
+            }
+
+            // Advance to the next hour using this slot's end time
+            const parts = slot.time_display.split(' - ');
+            if (parts.length < 2) break;
+            currentTime = parts[1].trim();
           }
 
-          // Fallback: book any single available slot in the window
-          if (numHours > 1) {
-            const allSlots = await this.getSlots(sport, facility.id, targetDate, false);
-            const slot = this.findAnySlotInWindow(allSlots, targetTime, numHours);
-            if (slot) {
-              console.log(`Full ${numHours}h window unavailable; booking partial slot ${slot.time_display} at ${facility.name}`);
-              return await this.reserve(sport, facility.id, slot, targetDate);
-            }
-          }
+          if (bookedCount > 0) return true;
         }
 
         const elapsedMin = (attempt * pollInterval) / 60;
