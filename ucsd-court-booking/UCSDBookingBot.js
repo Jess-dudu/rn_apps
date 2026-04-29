@@ -445,16 +445,20 @@ async getSlots(sport, facilityId, date, availableOnly = true) {
   // Books each available slot in the time window independently (no rollback).
   // Returns the number of slots successfully booked.
   async bookSlotsInWindow(sport, facilityId, date, startTime, numHours) {
+    console.log(`[bookSlotsInWindow] sport=${sport} date=${date} startTime=${startTime} numHours=${numHours}`);
     const allSlots = await this.getSlots(sport, facilityId, date, false);
+    console.log(`[bookSlotsInWindow] total slots fetched: ${allSlots.length}`);
     let currentTime = startTime;
     let bookedCount = 0;
 
     for (let i = 0; i < numHours; i++) {
       const slot = this.findSlotByTime(allSlots, currentTime);
+      console.log(`[bookSlotsInWindow] hour ${i+1}: currentTime=${currentTime} slot=${slot ? slot.time_display : 'NOT FOUND'} available=${slot ? slot.available : 'N/A'}`);
       if (!slot) break;
 
       if (slot.available) {
         const success = await this.reserve(sport, facilityId, slot, date);
+        console.log(`[bookSlotsInWindow] reserve result: ${success}`);
         if (success) bookedCount++;
       }
 
@@ -463,30 +467,7 @@ async getSlots(sport, facilityId, date, availableOnly = true) {
       currentTime = parts[1].trim();
     }
 
-    return bookedCount;
-  }
-
-  // Books each available slot in the time window independently (no rollback).
-  // Returns the number of slots successfully booked.
-  async bookSlotsInWindow(sport, facilityId, date, startTime, numHours) {
-    const allSlots = await this.getSlots(sport, facilityId, date, false);
-    let currentTime = startTime;
-    let bookedCount = 0;
-
-    for (let i = 0; i < numHours; i++) {
-      const slot = this.findSlotByTime(allSlots, currentTime);
-      if (!slot) break;
-
-      if (slot.available) {
-        const success = await this.reserve(sport, facilityId, slot, date);
-        if (success) bookedCount++;
-      }
-
-      const parts = slot.time_display.split(' - ');
-      if (parts.length < 2) break;
-      currentTime = parts[1].trim();
-    }
-
+    console.log(`[bookSlotsInWindow] done, bookedCount=${bookedCount}`);
     return bookedCount;
   }
 

@@ -77,7 +77,7 @@ const BookingScreen = () => {
         }
       }
       if (!booked) {
-        Alert.alert('Failed', 'No available slots found or booking failed. Slots may have been taken by someone else.');
+        Alert.alert('Failed', 'No available slots found or booking failed.');
       }
     } catch (error) {
       Alert.alert('Error', error.message);
