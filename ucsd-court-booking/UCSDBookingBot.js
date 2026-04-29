@@ -332,11 +332,11 @@ async getSlots(sport, facilityId, date, availableOnly = true) {
 
   async reserve(sport, facilityId, slot, date) {
     await this._ensureLoggedIn();
-    
+
     // Check if slot has required booking data
     if (!slot.apt_id || !slot.timeslot_id || !slot.timeslotinstance_id) {
       console.error('Slot missing required booking data:', slot);
-      throw new Error('Slot data is incomplete - cannot book this slot');
+      return false;   // was: throw — which escaped the try-catch and aborted the whole attempt
     }
     
     const productId = await this._getProductId(sport);
@@ -440,6 +440,54 @@ async getSlots(sport, facilityId, date, availableOnly = true) {
       result.push(nxt);
     }
     return result;
+  }
+
+  // Books each available slot in the time window independently (no rollback).
+  // Returns the number of slots successfully booked.
+  async bookSlotsInWindow(sport, facilityId, date, startTime, numHours) {
+    const allSlots = await this.getSlots(sport, facilityId, date, false);
+    let currentTime = startTime;
+    let bookedCount = 0;
+
+    for (let i = 0; i < numHours; i++) {
+      const slot = this.findSlotByTime(allSlots, currentTime);
+      if (!slot) break;
+
+      if (slot.available) {
+        const success = await this.reserve(sport, facilityId, slot, date);
+        if (success) bookedCount++;
+      }
+
+      const parts = slot.time_display.split(' - ');
+      if (parts.length < 2) break;
+      currentTime = parts[1].trim();
+    }
+
+    return bookedCount;
+  }
+
+  // Books each available slot in the time window independently (no rollback).
+  // Returns the number of slots successfully booked.
+  async bookSlotsInWindow(sport, facilityId, date, startTime, numHours) {
+    const allSlots = await this.getSlots(sport, facilityId, date, false);
+    let currentTime = startTime;
+    let bookedCount = 0;
+
+    for (let i = 0; i < numHours; i++) {
+      const slot = this.findSlotByTime(allSlots, currentTime);
+      if (!slot) break;
+
+      if (slot.available) {
+        const success = await this.reserve(sport, facilityId, slot, date);
+        if (success) bookedCount++;
+      }
+
+      const parts = slot.time_display.split(' - ');
+      if (parts.length < 2) break;
+      currentTime = parts[1].trim();
+    }
+
+    return bookedCount;
   }
 
   async cancel(participantId) {

@@ -69,25 +69,11 @@ const BookingScreen = () => {
 
       let booked = false;
       for (const fac of filteredFacilities) {
-        // Refresh slots to check current availability
-        const slots = await bot.getSlots(sport, fac.id, date);
-        const consecutive = bot.findConsecutiveSlots(slots, time, parseInt(hours));
-        if (consecutive) {
-          booked = await bot.reserveMulti(sport, fac.id, consecutive, date);
-          if (booked) {
-            Alert.alert('Success', `Booked ${hours} hour(s) at ${fac.name} starting ${consecutive[0].time_display}`);
-            break;
-          }
-        } else if (parseInt(hours) === 1) {
-          // Try to book a single slot if consecutive slots not found and hours = 1
-          const singleSlot = bot.findSlotByTime(slots, time);
-          if (singleSlot) {
-            booked = await bot.reserve(sport, fac.id, singleSlot, date);
-            if (booked) {
-              Alert.alert('Success', `Booked 1 hour at ${fac.name} at ${singleSlot.time_display}`);
-              break;
-            }
-          }
+        const bookedCount = await bot.bookSlotsInWindow(sport, fac.id, date, time, parseInt(hours));
+        if (bookedCount > 0) {
+          booked = true;
+          Alert.alert('Success', `Booked ${bookedCount} hour(s) at ${fac.name} starting ${time}`);
+          break;
         }
       }
       if (!booked) {
